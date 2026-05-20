@@ -162,6 +162,34 @@ export const PROVIDERS: ProviderConfig[] = [
       },
     ],
   },
+  {
+    id: 'gemini',
+    label: 'Google Gemini',
+    // Google AI Studio 提供的 OpenAI 兼容端点
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    apiKeyEnv: 'GEMINI_API_KEY',
+    homepage: 'https://aistudio.google.com/apikey',
+    models: [
+      {
+        id: 'gemini-2.0-flash',
+        label: 'Gemini 2.0 Flash',
+        supportsToolCalling: true,
+        hint: '免费，快速，多模态',
+      },
+      {
+        id: 'gemini-2.5-flash',
+        label: 'Gemini 2.5 Flash',
+        supportsToolCalling: true,
+        hint: '最新版，推理增强',
+      },
+      {
+        id: 'gemini-2.5-pro',
+        label: 'Gemini 2.5 Pro',
+        supportsToolCalling: true,
+        hint: '旗舰，复杂任务',
+      },
+    ],
+  },
 ]
 
 /** 兼容老的 OPENAI_BASE_URL/OPENAI_MODEL 配置：把它当作 fallback */
