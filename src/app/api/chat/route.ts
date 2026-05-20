@@ -32,6 +32,11 @@ type ChatMessage = {
 // 让 Next.js 用 Node.js Runtime（OpenAI SDK 在 Edge Runtime 也能跑，但 Node 更稳）
 export const runtime = 'nodejs'
 
+// Vercel Serverless Function 最大执行时长（秒）
+//   Hobby (免费版) 上限 60s，Pro 300s，Enterprise 900s
+//   流式聊天经常超 10s，必须显式声明，否则被默认 10s 截断
+export const maxDuration = 60
+
 export async function POST(req: Request) {
   try {
     const { messages } = (await req.json()) as { messages: ChatMessage[] }

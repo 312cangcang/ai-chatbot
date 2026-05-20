@@ -481,7 +481,7 @@ export default function ChatPage() {
         <div className="flex-1 overflow-y-auto p-2">
           {conversations.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs text-gray-400">
-              还没有对话，点上方"新建"开始吧
+              还没有对话，点上方「新建」开始吧
             </div>
           ) : (
             <ul className="space-y-1">
