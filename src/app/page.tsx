@@ -505,7 +505,13 @@ export default function ChatPage() {
             // 4. 服务端通知"全部完成"事件，前端无需特别处理（loading 状态由 finally 控制）
             if (parsed.type === 'done') continue
           } catch (e) {
-            console.warn('SSE parse error:', e, 'raw:', data)
+            // 关键：业务错误（如 429 限流、鉴权失败）需要冒泡到外层 catch 渲染到 UI
+            // 这里只静默忽略 JSON 解析失败这种"边边角角"的解析问题
+            if (e instanceof SyntaxError) {
+              console.warn('SSE parse error:', e, 'raw:', data)
+              continue
+            }
+            throw e
           }
         }
       }
@@ -513,6 +519,7 @@ export default function ChatPage() {
       const isAbort = err instanceof DOMException && err.name === 'AbortError'
       if (!isAbort) {
         const msg = err instanceof Error ? err.message : '请求失败'
+        console.error('[chat] 出错：', err)
         updateConvMessages(targetConvId, (prevMessages) => {
           const copy = [...prevMessages]
           const last = copy[copy.length - 1]
@@ -523,6 +530,12 @@ export default function ChatPage() {
                 ? last.content + `\n\n❌ 出错了：${msg}`
                 : `❌ 出错了：${msg}`,
             }
+          } else {
+            // 兜底：如果还没有 assistant 消息（比如错误在第一个 chunk 就来了），追加一条
+            copy.push({
+              role: 'assistant',
+              content: `❌ 出错了：${msg}`,
+            })
           }
           return copy
         })
