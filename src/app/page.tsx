@@ -13,10 +13,20 @@
 
 import { useState, useRef, useEffect, useMemo } from 'react'
 import MarkdownMessage from './components/MarkdownMessage'
+import ToolInvocations from './components/ToolInvocations'
+
+type ToolInvocation = {
+  name: string
+  args: Record<string, unknown>
+  result?: unknown
+  status: 'running' | 'done'
+}
 
 type Message = {
   role: 'user' | 'assistant'
   content: string
+  // Day 5：每条 assistant 消息可能携带若干次工具调用记录
+  toolInvocations?: ToolInvocation[]
 }
 
 type Conversation = {
@@ -83,7 +93,7 @@ export default function ChatPage() {
     () => conversations.find((c) => c.id === currentId) ?? null,
     [conversations, currentId],
   )
-  const messages = current?.messages ?? []
+  const messages = useMemo(() => current?.messages ?? [], [current])
 
   // —— 挂载后从 localStorage 读取 ——
   useEffect(() => {
@@ -338,23 +348,90 @@ export default function ChatPage() {
           if (data === '[DONE]') break
 
           try {
-            const parsed = JSON.parse(data) as { content?: string; error?: string }
-            if (parsed.error) {
-              throw new Error(parsed.error)
+            // Day 5：新协议——多事件类型
+            // 兼容旧协议：{content:"..."} 视为 type:"text"
+            const parsed = JSON.parse(data) as {
+              type?: string
+              content?: string
+              error?: string
+              name?: string
+              args?: Record<string, unknown>
+              result?: unknown
             }
-            if (parsed.content) {
+
+            if (parsed.error || parsed.type === 'error') {
+              throw new Error(parsed.error || '未知错误')
+            }
+
+            // 1. 文字增量（兼容旧协议没 type 字段的情况）
+            if (
+              (parsed.type === 'text' || parsed.type === undefined) &&
+              parsed.content
+            ) {
+              const incoming = parsed.content
               updateConvMessages(targetConvId, (prevMessages) => {
                 const copy = [...prevMessages]
                 const last = copy[copy.length - 1]
                 if (last && last.role === 'assistant') {
                   copy[copy.length - 1] = {
                     ...last,
-                    content: last.content + parsed.content,
+                    content: last.content + incoming,
                   }
                 }
                 return copy
               })
+              continue
             }
+
+            // 2. 工具开始调用 → 给最后一条 assistant 消息追加一个 running 状态的调用
+            if (parsed.type === 'tool_start' && parsed.name) {
+              const newInvocation: ToolInvocation = {
+                name: parsed.name,
+                args: parsed.args ?? {},
+                status: 'running',
+              }
+              updateConvMessages(targetConvId, (prevMessages) => {
+                const copy = [...prevMessages]
+                const last = copy[copy.length - 1]
+                if (last && last.role === 'assistant') {
+                  copy[copy.length - 1] = {
+                    ...last,
+                    toolInvocations: [
+                      ...(last.toolInvocations ?? []),
+                      newInvocation,
+                    ],
+                  }
+                }
+                return copy
+              })
+              continue
+            }
+
+            // 3. 工具调用完成 → 把对应 invocation 标记为 done 并填入结果
+            if (parsed.type === 'tool_result' && parsed.name) {
+              const resultValue = parsed.result
+              const toolName = parsed.name
+              updateConvMessages(targetConvId, (prevMessages) => {
+                const copy = [...prevMessages]
+                const last = copy[copy.length - 1]
+                if (last && last.role === 'assistant' && last.toolInvocations) {
+                  // 找到最后一个匹配 name 且还在 running 的 invocation 标为 done
+                  const invs = [...last.toolInvocations]
+                  for (let i = invs.length - 1; i >= 0; i--) {
+                    if (invs[i].name === toolName && invs[i].status === 'running') {
+                      invs[i] = { ...invs[i], status: 'done', result: resultValue }
+                      break
+                    }
+                  }
+                  copy[copy.length - 1] = { ...last, toolInvocations: invs }
+                }
+                return copy
+              })
+              continue
+            }
+
+            // 4. 服务端通知"全部完成"事件，前端无需特别处理（loading 状态由 finally 控制）
+            if (parsed.type === 'done') continue
           } catch (e) {
             console.warn('SSE parse error:', e, 'raw:', data)
           }
@@ -684,6 +761,14 @@ export default function ChatPage() {
                       m.role === 'user' ? 'items-end' : 'items-start'
                     }`}
                   >
+                    {/* Day 5：assistant 消息上方展示工具调用 */}
+                    {m.role === 'assistant' &&
+                      m.toolInvocations &&
+                      m.toolInvocations.length > 0 && (
+                        <div className="w-full max-w-[80%]">
+                          <ToolInvocations invocations={m.toolInvocations} />
+                        </div>
+                      )}
                     <div
                       className={`max-w-[80%] rounded-2xl px-4 py-2 shadow-sm ${
                         m.role === 'user'
@@ -691,7 +776,9 @@ export default function ChatPage() {
                           : 'bg-white text-gray-800'
                       }`}
                     >
-                      {isStreaming && m.content === '' ? (
+                      {isStreaming &&
+                      m.content === '' &&
+                      (!m.toolInvocations || m.toolInvocations.length === 0) ? (
                         <span className="inline-flex gap-1">
                           <span className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.3s]"></span>
                           <span className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.15s]"></span>
@@ -699,8 +786,14 @@ export default function ChatPage() {
                         </span>
                       ) : m.role === 'assistant' ? (
                         <>
-                          <MarkdownMessage content={m.content} />
-                          {isStreaming && (
+                          {m.content ? (
+                            <MarkdownMessage content={m.content} />
+                          ) : isStreaming ? (
+                            <span className="text-gray-400 text-sm italic">
+                              正在思考下一步…
+                            </span>
+                          ) : null}
+                          {isStreaming && m.content && (
                             <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-gray-500 align-middle" />
                           )}
                         </>

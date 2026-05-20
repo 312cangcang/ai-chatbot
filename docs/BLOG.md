@@ -471,18 +471,254 @@ const STORAGE_KEY = 'chatbot:conversations:v2'  // ← 加个 v2
 
 ---
 
-## 下一步
+## Day 5：从 Chatbot 升级为 Web Agent —— Function Calling 全链路
 
-- **Day 5：Tool Calling**——让 AI 调用工具，从 chatbot 升级成 Agent
-- ~~部署到 Vercel，把 SSE 在真实生产环境上跑一跑~~ ✅ 已部署
-- 加个 e2e 测试覆盖核心流程
+> 写到第 5 天，前 4 天是把"对话"做扎实；第 5 天是质变——**让 AI 真的能"做事"**。这一天踩的坑也是最多最绕的，值得单独大书一笔。
+
+### 一句话理解 Tool Calling 是什么
+
+> **AI 永远是嘴炮，干活的永远是你的代码。** AI 只是聪明在"知道什么时候让谁干活"。
+
+LLM 内部不能联网、不能查时间、不能算数、不能读文件。它能做的只是：**当用户问到这些事，输出一段结构化的"工具调用请求"**：
+
+```json
+{ "name": "get_current_time", "arguments": "{}" }
+```
+
+然后**你的后端代码**真去执行 `new Date()`，把结果再喂回给 AI，AI 这才生成最终回答。
+
+### 整个 Day 5 最大的 3 个难点
+
+#### 难点 1：为什么要 `while` 循环？
+
+简单情况一轮就够（"现在几点" → 调 `get_current_time` → 总结）。
+**但用户可能问**："**北京气温×2+5 等于多少？**"
+
+```
+第 1 轮：AI 喊 get_weather(北京) → 拿到 12°C
+第 2 轮：AI 看到结果，又喊 calculator("12*2+5") → 拿到 29
+第 3 轮：AI 看到结果，给最终答案"北京气温 12°C 的两倍加 5 度 = 29°C"
+```
+
+**关键洞察**：AI 没有"全局计划"。它**每一轮都是看着当前 `messages` 现场决策**——所以只能用 `while` 循环 + `MAX_ROUNDS=5` 防死循环。
+
+```ts
+let round = 0
+while (round++ < MAX_ROUNDS) {
+  const stream = await openai.chat.completions.create({ messages, tools, stream: true })
+  const toolCalls = await consumeStreamAndForwardText(stream)
+  if (toolCalls.length === 0) break  // AI 不再喊工具 → 结束
+  await executeToolsAndAppendToMessages(toolCalls, messages)
+}
+```
+
+#### 难点 2：messages 数组的"喊单/回单"协议
+
+OpenAI Tool Calling 协议有个**死板要求**：每个 `assistant.tool_calls` 数组里**有几个工具喊单**，下面就**必须有几个 `role: 'tool'` 消息**对应回单，靠 `tool_call_id` 一一对应。少一个直接报错：
+
+> "messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
+
+**正确的多轮 messages 长这样**（"北京气温×2+5"完整对话）：
+
+```js
+[
+  { role: 'system', content: '...' },
+  { role: 'user', content: '北京气温×2+5 是多少？' },
+
+  // 第 1 轮：AI 喊 get_weather
+  { role: 'assistant', content: null, tool_calls: [
+      { id: 'call_A', function: { name: 'get_weather', arguments: '{"city":"北京"}' } }
+  ]},
+  { role: 'tool', tool_call_id: 'call_A', content: '{"temperature":12,"condition":"晴"}' },
+
+  // 第 2 轮：AI 喊 calculator
+  { role: 'assistant', content: null, tool_calls: [
+      { id: 'call_B', function: { name: 'calculator', arguments: '{"expression":"12*2+5"}' } }
+  ]},
+  { role: 'tool', tool_call_id: 'call_B', content: '{"result":29}' },
+
+  // 第 3 轮：AI 不再喊工具，给最终答案
+  { role: 'assistant', content: '北京气温 12°C 的两倍加 5 度 = 29°C。' }
+]
+```
+
+**同一轮内的多个工具**（用户问"北京和上海现在分别几点？"）应该并行执行——AI 一次喊 2 个工具，后端用 `Promise.all` 同时跑：
+
+```ts
+const results = await Promise.all(
+  toolCalls.map(async (call) => {
+    sendSSE({ type: 'tool_start', name: call.function.name, args: ... })
+    const result = await TOOL_IMPL[call.function.name](JSON.parse(call.function.arguments))
+    sendSSE({ type: 'tool_result', name: call.function.name, result })
+    return { tool_call_id: call.id, role: 'tool' as const, content: JSON.stringify(result) }
+  })
+)
+results.forEach(r => messages.push(r))
+```
+
+#### 难点 3：流式 + 工具调用如何在一个 SSE 流里共存？
+
+这是整个 Day 5 **技术含量最高**也是大多数教程**不讲**的地方。
+
+**Day 4 的 SSE 协议**只有一种事件：
+
+```
+data: { "content": "你" }
+```
+
+**Day 5 加上 Tool Calling 后**，一个用户问题可能产生 **3 种穿插事件**：
+
+```
+text "好的"
+text "，让"
+text "我先查"
+text "一下..."          ← 文字流（AI 边说边决定要喊工具）
+tool_start get_weather  ← 突然切换到工具调用！
+tool_result {temp:12}   ← 工具执行完成
+text "北京气温"
+text "12 度，"           ← 第 2 轮 AI 又开始流式输出
+text "下面给你写首诗：" 
+[DONE]
+```
+
+**解法**：扩展 SSE 协议，给每条事件加 `type` 字段：
+
+```ts
+// 后端发送（src/app/api/chat/route.ts）
+function sendSSE(controller: ReadableStreamDefaultController, data: object) {
+  const text = `data: ${JSON.stringify(data)}\n\n`
+  controller.enqueue(encoder.encode(text))
+}
+
+sendSSE(controller, { type: 'text', content: '北京' })
+sendSSE(controller, { type: 'tool_start', id: 'A', name: 'get_weather', args: { city: '北京' } })
+sendSSE(controller, { type: 'tool_result', id: 'A', result: { temperature: 12 } })
+```
+
+```ts
+// 前端按 type 分发（src/app/page.tsx）
+const event = JSON.parse(line.replace(/^data:\s*/, ''))
+switch (event.type) {
+  case 'text':
+    appendDeltaToCurrentMessage(event.content)
+    break
+  case 'tool_start':
+    addToolInvocation({ id: event.id, name: event.name, args: event.args, status: 'running' })
+    break
+  case 'tool_result':
+    updateToolInvocation(event.id, { status: 'done', result: event.result })
+    break
+}
+```
+
+### 工具描述的"说明书学"
+
+很多人以为给 AI 看的是工具的 TS 类型签名，**完全错**。AI 看的是 **JSON Schema**——本质是一份"使用说明书"：
+
+```ts
+{
+  type: 'function',
+  function: {
+    name: 'calculator',
+    description: '执行精确的数学计算，支持加减乘除、括号、小数。当用户需要计算具体数字时必须使用此工具，不要自己心算。',
+    parameters: {
+      type: 'object',
+      properties: {
+        expression: {
+          type: 'string',
+          description: '要计算的数学表达式，只能包含数字和 + - * / ( ) 符号，例如 "(12 * 2) + 5"',
+        },
+      },
+      required: ['expression'],
+    },
+  },
+}
+```
+
+**`description` 写得好不好，直接决定 AI 调不调对工具**。我有一次 mock 时把 `get_weather` 的 description 写成了"查股票"，结果用户问天气 AI 死活不调它——因为 AI 看的是说明书不是函数名。
+
+### Day 5 踩到的坑
+
+#### 坑 1：流式工具调用 chunk 是分片到达的
+
+OpenAI 流式协议下，**单个工具调用的 `arguments` 字段是逐字节到达的**——你不能拿到第一个 chunk 就 `JSON.parse`，得**累积完整后再 parse**。
+
+```ts
+// ❌ 错误：第一个 chunk arguments 可能只有 '{"ci'
+const args = JSON.parse(toolCallDelta.function.arguments)
+
+// ✅ 正确：按 index 累积
+for (const delta of chunk.choices[0].delta.tool_calls ?? []) {
+  const idx = delta.index
+  if (!toolCalls[idx]) toolCalls[idx] = { id: '', function: { name: '', arguments: '' } }
+  if (delta.id) toolCalls[idx].id = delta.id
+  if (delta.function?.name) toolCalls[idx].function.name += delta.function.name
+  if (delta.function?.arguments) toolCalls[idx].function.arguments += delta.function.arguments
+}
+// 流结束后才 JSON.parse
+const args = JSON.parse(toolCalls[idx].function.arguments)
+```
+
+**这个细节文档里写得很轻描淡写**，我是看到 `JSON.parse SyntaxError: Unexpected end of JSON input` 才发现的。
+
+#### 坑 2：工具结果必须是 string
+
+`role: 'tool'` 消息的 `content` 必须是字符串。哪怕你的工具返回的是对象 `{ temperature: 12 }`，也得 `JSON.stringify` 后塞进去：
+
+```ts
+messages.push({
+  role: 'tool',
+  tool_call_id: call.id,
+  content: JSON.stringify(result),  // ← 必须 stringify！
+})
+```
+
+直接塞对象会报 `Invalid type for 'content': expected string, but got object`。
+
+#### 坑 3：DeepSeek 的 finish_reason 行为
+
+OpenAI 官方流式协议：最后一个 chunk 会有 `finish_reason: "tool_calls"` 表示这一轮在喊工具，`finish_reason: "stop"` 表示正常结束。
+
+**DeepSeek 也兼容**，但我代码里没依赖 `finish_reason`，而是看 `toolCalls.length === 0` 来判断结束——更稳妥，也兼容那些不严格遵守协议的国产模型。
+
+#### 坑 4：MAX_ROUNDS 不能设太大
+
+我设的 5。设 10 也行，但**别设无限**——AI 偶尔会进入"我喊一个工具，看到结果，又决定再喊同一个工具"的死循环。5 轮足够覆盖 99% 的真实场景，5 轮还没结束的多半是 AI 出错了，不如直接给个错误提示。
+
+### 前端 UI：让工具卡片"长在"消息气泡上
+
+数据模型把 `Message` 类型扩展了：
+
+```ts
+type ToolInvocation = {
+  id: string
+  name: string
+  args: Record<string, unknown>
+  status: 'running' | 'done'
+  result?: unknown
+}
+
+type Message = {
+  role: 'user' | 'assistant'
+  content: string
+  toolInvocations?: ToolInvocation[]  // ← 新增
+}
+```
+
+渲染时：每条 assistant 消息**先在气泡上方**渲染工具卡片列表（折叠形式，可点开看 args/result），下方才是流式 markdown 文字。这样视觉上**动作发生在前，结果总结在后**，符合用户心智。
+
+### 一句话总结 Day 5
+
+> Tool Calling 不是"调个 API"那么简单。**核心是把 LLM 当做一个会喊指令但不能干活的会议主持人，你的代码当秘书去执行指令、汇报结果**。这套循环跑通后，再想给 Agent 加新能力，**就是写个新工具 + 注册 schema 就行**——这就是为什么 Function Calling 是把 chatbot 升级为 Agent 的钥匙。
 
 ---
 
+
+
 ## 在线试玩 & 完整代码
 
-- 🌐 **Live Demo**：<https://ai-chatbot-one-rust.vercel.app>（DeepSeek 接口，流式响应实时蹦字，欢迎随便玩）
-- 📦 **GitHub 仓库**：<https://github.com/312cangcang/ai-chatbot>（4 天迭代历史完整保留，欢迎 Star ⭐）
+- 🌐 **Live Demo**：<https://ai-chatbot-one-rust.vercel.app>（DeepSeek 接口，流式响应实时蹦字，支持 Function Calling 工具调用，欢迎随便玩）
+- 📦 **GitHub 仓库**：<https://github.com/312cangcang/ai-chatbot>（5 天迭代历史完整保留，欢迎 Star ⭐）
 
 ### 部署到 Vercel 也踩到一个坑
 
