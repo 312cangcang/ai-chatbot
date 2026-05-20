@@ -474,7 +474,28 @@ const STORAGE_KEY = 'chatbot:conversations:v2'  // ← 加个 v2
 ## 下一步
 
 - **Day 5：Tool Calling**——让 AI 调用工具，从 chatbot 升级成 Agent
-- 部署到 Vercel，把 SSE 在真实生产环境上跑一跑
+- ~~部署到 Vercel，把 SSE 在真实生产环境上跑一跑~~ ✅ 已部署
 - 加个 e2e 测试覆盖核心流程
+
+---
+
+## 在线试玩 & 完整代码
+
+- 🌐 **Live Demo**：<https://ai-chatbot-one-rust.vercel.app>（DeepSeek 接口，流式响应实时蹦字，欢迎随便玩）
+- 📦 **GitHub 仓库**：<https://github.com/312cangcang/ai-chatbot>（4 天迭代历史完整保留，欢迎 Star ⭐）
+
+### 部署到 Vercel 也踩到一个坑
+
+部署时被一个**默认 10 秒超时**坑了——Vercel Hobby 计划的 Serverless Function **默认 10s 就被强制 kill**，流式聊天动辄 30~60s，超了直接断流。
+
+解决：在 route handler 里显式声明：
+
+```ts
+export const runtime = 'nodejs'
+export const maxDuration = 60  // Hobby 上限 60s，Pro 300s
+```
+
+再次印证那条原则：**默认值才是最大的坑**。文档里写得很小，不踩一次永远不会主动去配。
+
 
 代码全部开源：<https://github.com/312cangcang/ai-chatbot>，欢迎 PR / Issue / Star ⭐

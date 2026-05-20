@@ -1,14 +1,18 @@
 # 简历项目描述
 
+> 🌐 **在线 Demo**：<https://ai-chatbot-one-rust.vercel.app>　|　📦 **代码**：<https://github.com/312cangcang/ai-chatbot>
+
 针对不同情境我写了 4 个版本，从短到长。直接复制粘贴用。
+
+> 💡 **简历写法建议**：写简历时记得把 **Live Demo URL** 也带上 —— 招聘官能 1 秒打开试玩远胜过 100 字描述。
 
 ---
 
 ## 版本 1：超精简（120 字 / 一行块）
 
-> **AI Chatbot Web** · Next.js 14 · TypeScript · DeepSeek API · [GitHub](https://github.com/312cangcang/ai-chatbot)
+> **AI Chatbot Web** · Next.js 14 · TypeScript · DeepSeek API · [Live Demo](https://ai-chatbot-one-rust.vercel.app) · [GitHub](https://github.com/312cangcang/ai-chatbot)
 > 
-> 4 天独立开发的 ChatGPT 式流式对话 Web 应用。**不依赖 Vercel AI SDK 等封装**，手写 SSE 协议解析、`ReadableStream` + `TextDecoder` 处理 TCP 粘包/UTF-8 多字节切分；实现可中断流式生成（`AbortController`）、多对话管理（含流式中切换/删除边界处理）、`localStorage` 持久化、Markdown + 代码高亮、可折叠侧边栏、内联重命名等完整产品级特性。
+> 4 天独立开发并部署上线的 ChatGPT 式流式对话 Web 应用。**不依赖 Vercel AI SDK 等封装**，手写 SSE 协议解析、`ReadableStream` + `TextDecoder` 处理 TCP 粘包/UTF-8 多字节切分；实现可中断流式生成（`AbortController`）、多对话管理（含流式中切换/删除边界处理）、`localStorage` 持久化、Markdown + 代码高亮、可折叠侧边栏、内联重命名等完整产品级特性。
 
 ---
 

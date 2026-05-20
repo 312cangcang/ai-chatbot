@@ -2,6 +2,12 @@
 
 > 一个从零手写的 ChatGPT 式流式对话 Web 应用 —— **不依赖 Vercel AI SDK / LangChain 等框架**，目的是搞懂 LLM 应用的底层协议与工程实现。
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-▶_Try_it_now-success?style=for-the-badge&logo=vercel)](https://ai-chatbot-one-rust.vercel.app)
+[![Tech Blog](https://img.shields.io/badge/Tech_Blog-📝_4000_words-blue?style=for-the-badge)](./docs/BLOG.md)
+[![Next.js](https://img.shields.io/badge/Next.js-14.2-black?style=for-the-badge&logo=next.js)](https://nextjs.org)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](./LICENSE)
+
+🌐 **在线 Demo**：<https://ai-chatbot-one-rust.vercel.app>
 🔗 **技术复盘博客**：[`docs/BLOG.md`](./docs/BLOG.md)（4000 字，含完整踩坑过程）
 
 ---
