@@ -79,6 +79,11 @@ export async function POST(req: Request) {
     const modelInfo = getModelInfo(providerId, finalModelId)
     const supportsTool = modelInfo?.supportsToolCalling ?? true
 
+    // 调试：打印当前请求实际使用的供应商和模型
+    console.log(
+      `[chat] provider=${providerCfg.id} model=${finalModelId} baseURL=${providerCfg.baseURL} supportsTool=${supportsTool}`,
+    )
+
     const encoder = new TextEncoder()
 
     const sseStream = new ReadableStream({
@@ -91,14 +96,24 @@ export async function POST(req: Request) {
         }
 
         try {
+          // 动态 system prompt：根据当前选用的 provider/model 注入身份
+          // 这样切到 Qwen 时模型就不会自称 "DeepSeek"（因训练数据污染导致）
+          const systemPrompt = [
+            `你是基于 ${providerCfg.label} 的 AI 助手，当前运行的模型是 ${finalModelId}。`,
+            `当用户问"你是什么模型/你是谁/你的开发者"时，请如实回答上述信息，不要冒充其他模型。`,
+            `请用友好、简洁的中文回答用户。`,
+            supportsTool
+              ? `当需要查询实时数据（时间、天气）或精确计算时，请主动调用对应工具。`
+              : `（当前模型不支持工具调用，请基于已有知识直接作答。）`,
+          ].join('\n')
+
           // OpenAI SDK 的消息类型比较严格，这里用 any 灵活处理
           // (因为要往里 push tool_calls / tool 角色的消息)
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const conversation: any[] = [
             {
               role: 'system',
-              content:
-                '你是一个友好、乐于助人的 AI 助手，用简洁的中文回答。当需要查询实时数据（时间、天气）或精确计算时，请主动调用对应工具。',
+              content: systemPrompt,
             },
             ...messages,
           ]
