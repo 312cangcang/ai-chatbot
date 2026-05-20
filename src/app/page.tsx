@@ -14,6 +14,10 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import MarkdownMessage from './components/MarkdownMessage'
 import ToolInvocations from './components/ToolInvocations'
+import ModelPicker, {
+  type PublicProvider,
+  type ModelSelection,
+} from './components/ModelPicker'
 
 type ToolInvocation = {
   name: string
@@ -40,6 +44,7 @@ type Conversation = {
 const STORAGE_KEY_CONVERSATIONS = 'chatbot:conversations:v2'
 const STORAGE_KEY_CURRENT_ID = 'chatbot:current-id:v2'
 const STORAGE_KEY_SIDEBAR_OPEN = 'chatbot:sidebar-open:v2'
+const STORAGE_KEY_MODEL = 'chatbot:model-selection:v1'
 const MAX_MESSAGES_PER_CONV = 100
 const MAX_CONVERSATIONS = 50
 
@@ -85,6 +90,12 @@ export default function ChatPage() {
 
   // 流式时锁定的对话 id（用于在列表项显示"●"动画）
   const [streamingConvId, setStreamingConvId] = useState<string | null>(null)
+
+  // —— 模型选择相关 ——
+  const [providers, setProviders] = useState<PublicProvider[]>([])
+  const [selectedModel, setSelectedModel] = useState<ModelSelection | null>(
+    null,
+  )
 
   const abortRef = useRef<AbortController | null>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -149,6 +160,63 @@ export default function ChatPage() {
       /* ignore */
     }
   }, [sidebarOpen, hydrated])
+
+  // —— 拉取后端已配置的供应商列表 + 恢复用户上次选的模型 ——
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const res = await fetch('/api/providers')
+        const data = (await res.json()) as { providers: PublicProvider[] }
+        if (cancelled) return
+        const list = data.providers ?? []
+        setProviders(list)
+        if (list.length === 0) return
+
+        // 读取上次的选择
+        let saved: ModelSelection | null = null
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY_MODEL)
+          if (raw) saved = JSON.parse(raw) as ModelSelection
+        } catch {
+          /* ignore */
+        }
+
+        // 验证保存的选择仍然有效
+        const validProvider = saved
+          ? list.find((p) => p.id === saved!.providerId)
+          : undefined
+        const validModel = validProvider?.models.find(
+          (m) => m.id === saved!.modelId,
+        )
+        if (validProvider && validModel) {
+          setSelectedModel(saved!)
+        } else {
+          // 默认选第一个供应商的第一个模型
+          setSelectedModel({
+            providerId: list[0].id,
+            modelId: list[0].models[0].id,
+          })
+        }
+      } catch (e) {
+        console.warn('拉取供应商列表失败:', e)
+      }
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // —— 持久化当前选中的模型 ——
+  useEffect(() => {
+    if (!selectedModel) return
+    try {
+      localStorage.setItem(STORAGE_KEY_MODEL, JSON.stringify(selectedModel))
+    } catch {
+      /* ignore */
+    }
+  }, [selectedModel])
 
   function updateConvMessages(
     targetId: string,
@@ -318,7 +386,11 @@ export default function ChatPage() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: historyForApi }),
+        body: JSON.stringify({
+          messages: historyForApi,
+          provider: selectedModel?.providerId,
+          model: selectedModel?.modelId,
+        }),
         signal: controller.signal,
       })
 
@@ -711,19 +783,24 @@ export default function ChatPage() {
                 <span className="truncate">
                   {current?.title || 'AI ChatBot'}
                 </span>
-                <span className="hidden shrink-0 text-sm font-normal text-gray-500 sm:inline">
-                  · DeepSeek
-                </span>
               </h1>
             </div>
-            <button
-              onClick={clearHistory}
-              disabled={loading || !current || current.messages.length === 0}
-              className="shrink-0 rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 transition hover:border-red-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-gray-300 disabled:hover:bg-transparent disabled:hover:text-gray-600"
-              title="清空当前对话的消息"
-            >
-              🗑️ 清空
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <ModelPicker
+                providers={providers}
+                value={selectedModel}
+                onChange={setSelectedModel}
+                disabled={loading}
+              />
+              <button
+                onClick={clearHistory}
+                disabled={loading || !current || current.messages.length === 0}
+                className="shrink-0 rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 transition hover:border-red-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-gray-300 disabled:hover:bg-transparent disabled:hover:text-gray-600"
+                title="清空当前对话的消息"
+              >
+                🗑️ 清空
+              </button>
+            </div>
           </div>
         </header>
 

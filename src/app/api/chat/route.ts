@@ -21,13 +21,7 @@
 
 import OpenAI from 'openai'
 import { TOOL_IMPL, TOOLS_SCHEMA } from './tools'
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL,
-})
-
-const MODEL = process.env.OPENAI_MODEL || 'deepseek-chat'
+import { getProviderConfig, getModelInfo } from '@/lib/providers'
 
 type ChatMessage = {
   role: 'system' | 'user' | 'assistant'
@@ -43,7 +37,12 @@ export const maxDuration = 60
 
 export async function POST(req: Request) {
   try {
-    const { messages } = (await req.json()) as { messages: ChatMessage[] }
+    const body = (await req.json()) as {
+      messages: ChatMessage[]
+      provider?: string
+      model?: string
+    }
+    const { messages, provider: providerId, model: modelId } = body
 
     if (!messages || !Array.isArray(messages)) {
       return new Response(JSON.stringify({ error: 'messages 必须是数组' }), {
@@ -51,6 +50,34 @@ export async function POST(req: Request) {
         headers: { 'Content-Type': 'application/json' },
       })
     }
+
+    // —— 根据请求体里的 provider/model 选客户端和模型 ——
+    let providerCfg
+    try {
+      providerCfg = getProviderConfig(providerId)
+    } catch (e) {
+      return new Response(
+        JSON.stringify({
+          error: e instanceof Error ? e.message : '供应商配置错误',
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+
+    const client = new OpenAI({
+      apiKey: providerCfg.apiKey,
+      baseURL: providerCfg.baseURL,
+    })
+
+    // 选模型：优先用前端指定的；否则用该供应商第一个模型
+    const finalModelId =
+      (modelId && providerCfg.models.find((m) => m.id === modelId)?.id) ||
+      providerCfg.models[0]?.id ||
+      'gpt-3.5-turbo'
+
+    // 该模型是否支持 Function Calling（决定是否注入 tools）
+    const modelInfo = getModelInfo(providerId, finalModelId)
+    const supportsTool = modelInfo?.supportsToolCalling ?? true
 
     const encoder = new TextEncoder()
 
@@ -77,12 +104,15 @@ export async function POST(req: Request) {
           ]
 
           // ============== 工具调用循环 ==============
-          for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+          // 不支持工具的模型只跑一轮纯流式
+          const maxRounds = supportsTool ? MAX_TOOL_ROUNDS : 1
+          for (let round = 0; round < maxRounds; round++) {
             const llmStream = await client.chat.completions.create({
-              model: MODEL,
+              model: finalModelId,
               messages: conversation,
-              tools: TOOLS_SCHEMA,
-              tool_choice: 'auto',
+              ...(supportsTool
+                ? { tools: TOOLS_SCHEMA, tool_choice: 'auto' as const }
+                : {}),
               stream: true,
             })
 
