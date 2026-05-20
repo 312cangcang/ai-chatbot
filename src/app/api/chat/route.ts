@@ -31,6 +31,66 @@ type ChatMessage = {
 // 工具调用循环最大轮数（防止 LLM 无限循环调工具）
 const MAX_TOOL_ROUNDS = 5
 
+/**
+ * 把 LLM 调用抛出的原始错误转换成对用户友好的中文提示
+ * 覆盖最常见的几种：限流 / 鉴权 / 余额不足 / 模型不存在 / 网络问题
+ */
+function humanizeLLMError(
+  err: unknown,
+  ctx: { providerLabel: string; modelId: string },
+): string {
+  // OpenAI SDK 的 APIError 上会带 status / code 字段
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const e = err as any
+  const status: number | undefined = e?.status
+  const rawMsg: string =
+    (typeof e?.message === 'string' && e.message) ||
+    (typeof err === 'string' ? err : '') ||
+    '未知错误'
+  const { providerLabel, modelId } = ctx
+
+  // 429 限流
+  if (status === 429) {
+    // Gemini 2.5 Pro 免费层每天只有 5 次，单独提示一下
+    if (modelId.includes('gemini-2.5-pro')) {
+      return `${providerLabel} ${modelId} 触发限流（免费层每天仅 5 次）。请切换到 Gemini 2.0 Flash（1500 次/天）或其他供应商继续。`
+    }
+    return `${providerLabel} ${modelId} 触发限流（429 Too Many Requests）。请稍后重试，或切换到其他模型。`
+  }
+
+  // 401 / 403 鉴权
+  if (status === 401 || status === 403) {
+    return `${providerLabel} 鉴权失败（${status}）。请检查对应的 API Key 是否正确、是否过期。`
+  }
+
+  // 402 余额不足（部分供应商）
+  if (status === 402 || /insufficient|balance|quota/i.test(rawMsg)) {
+    return `${providerLabel} 账户余额或额度不足，请到对应控制台充值/续期后重试。`
+  }
+
+  // 404 模型不存在
+  if (status === 404 || /model.*not.*found|not found/i.test(rawMsg)) {
+    return `${providerLabel} 找不到模型 ${modelId}（可能已下线或名称变更）。请换一个模型。`
+  }
+
+  // 5xx 服务端
+  if (typeof status === 'number' && status >= 500) {
+    return `${providerLabel} 服务暂时不可用（${status}），请稍后重试或切换其他供应商。`
+  }
+
+  // 网络/超时（常见于本地访问 Gemini 没开代理）
+  if (
+    /fetch failed|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|network|timeout/i.test(
+      rawMsg,
+    )
+  ) {
+    return `连接 ${providerLabel} 失败（网络不通或超时）。如使用 Gemini 等海外服务，请确认本地代理已开启。`
+  }
+
+  // 其他：保留原始错误，但加上上下文，便于排查
+  return `${providerLabel} ${modelId} 调用失败：${rawMsg}`
+}
+
 export const runtime = 'nodejs'
 // Vercel Hobby 上限 60s
 export const maxDuration = 60
@@ -235,10 +295,13 @@ export async function POST(req: Request) {
           controller.close()
         } catch (err) {
           console.error('[/api/chat] 流式生成失败:', err)
-          const message = err instanceof Error ? err.message : '未知错误'
+          const friendly = humanizeLLMError(err, {
+            providerLabel: providerCfg.label,
+            modelId: finalModelId,
+          })
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ type: 'error', error: message })}\n\n`,
+              `data: ${JSON.stringify({ type: 'error', error: friendly })}\n\n`,
             ),
           )
           controller.enqueue(encoder.encode('data: [DONE]\n\n'))
